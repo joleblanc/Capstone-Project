@@ -155,30 +155,285 @@ mu_hat <- mean(edx$rating)
 mu_hat
 ```
 
-# Naive RMSE
+Naive RMSE
 
 ```{r}
 naive_rmse <- RMSE(validation$rating, mu_hat)
 naive_rmse
 ```
 
-# results table for the naive approach
+Results table for the naive approach
 
 ```{r}
 rmse_results <- data_frame(method = "Just the average", RMSE = naive_rmse)
 ```
 
+Modeling estimates of movie effects
+
+```{r}
+mu <- mean(edx$rating) 
+movie_avgs <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = mean(rating - mu))
+```
+
+Plot of estimates
+
+```{r}
+movie_avgs %>% qplot(b_i, geom ="histogram", bins = 30, data = ., color = I("black"))
+```
+
+New prediction to show the difference to the naive approach
+
+```{r}
+predicted_ratings <- mu + validation %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  .$b_i
+
+model_1_rmse <- RMSE(predicted_ratings, validation$rating)
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Movie Effect Model",  
+                                     RMSE = model_1_rmse ))
+rmse_results %>% knitr::kable()
+```
+
+Modeling user effect to get the average rating for the user
+```{r}
+edx %>% 
+  group_by(userId) %>% 
+  summarize(b_u = mean(rating)) %>% 
+  filter(n()>=100) %>%
+  ggplot(aes(b_u)) + 
+  geom_histogram(bins = 30, color = "black")
+```
+
+Compute approximation of user effects
+```{r}
+user_avgs <- validation %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu - b_i))
+```
+
+Create predictors to show improvement of RMSE
+```{r}
+predicted_ratings <- validation %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId') %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  .$pred
 
 
+model_2_rmse <- RMSE(predicted_ratings, validation$rating)
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Movie + User Effects Model",  
+                                     RMSE = model_2_rmse ))
+rmse_results %>% knitr::kable()
+```
+
+# PART 3
+
+##Improve results to get a lower RMSE
+
+Check for the 10 largest mistakes to improve the model
+
+```{r}
+validation %>% 
+  left_join(movie_avgs, by="movieId") %>%
+  mutate(residual = rating - (mu + b_i)) %>%
+  arrange(desc(abs(residual))) %>% 
+  dplyr::select(title, residual) %>% slice(1:10) %>% knitr::kable()
+```
+
+Connect movieID with titles
+
+```{r}
+movie_titles <- movielens %>% 
+  dplyr::select(movieId, title) %>%
+  distinct()
+```
 
 
+List of the 10 best movies without correcting for number of ratings
+
+```{r}
+movie_avgs %>% left_join(movie_titles, by="movieId") %>%
+  arrange(desc(b_i)) %>% 
+  dplyr::select(title, b_i) %>% 
+  slice(1:10) %>%   knitr::kable() 
+```
 
 
+List of the 10 worst movies without correcting for number of ratings
+
+```{r}
+movie_avgs %>% left_join(movie_titles, by="movieId") %>%
+  arrange(b_i) %>% 
+  dplyr::select(title, b_i) %>% 
+  slice(1:10) %>%  
+  knitr::kable()
+```
 
 
+How often are the best movies rated 
+
+```{r}
+edx %>% count(movieId) %>% 
+  left_join(movie_avgs) %>%
+  left_join(movie_titles, by="movieId") %>%
+  arrange(desc(b_i)) %>% 
+  dplyr::select(title, b_i, n) %>% 
+  slice(1:10) %>% 
+  knitr::kable()
+```
 
 
+How often are the worst movies rated
+
+```{r}
+edx %>% count(movieId) %>% 
+  left_join(movie_avgs) %>%
+  left_join(movie_titles, by="movieId") %>%
+  arrange(b_i) %>% 
+  dplyr::select(title, b_i, n) %>% 
+  slice(1:10) %>% 
+  knitr::kable()
+```
 
 
+Regularized estimates: exclude movies with less than 5 ratings
+
+```{r}
+lambda <- 5
+mu <- mean(edx$rating)
+movie_reg_avgs <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = sum(rating - mu)/(n()+lambda), n_i = n()) 
+```
 
 
+Plot of regularization to show regularized estimates vs. least square estimates
+
+```{r}
+data_frame(original = movie_avgs$b_i, 
+           regularlized = movie_reg_avgs$b_i, 
+           n = movie_reg_avgs$n_i) %>%
+  ggplot(aes(original, regularlized, size=sqrt(n))) + 
+  geom_point(shape=1, alpha=0.5)
+```
+
+
+Top 10 movies based on lambda
+
+```{r}
+edx %>%
+  count(movieId) %>% 
+  left_join(movie_reg_avgs) %>%
+  left_join(movie_titles, by="movieId") %>%
+  arrange(desc(b_i)) %>% 
+  dplyr::select(title, b_i, n) %>% 
+  slice(1:10) %>% 
+  knitr::kable()
+```
+
+
+10 worst movies based on lambda
+
+```{r}
+edx %>%
+  count(movieId) %>% 
+  left_join(movie_reg_avgs) %>%
+  left_join(movie_titles, by="movieId") %>%
+  arrange(b_i) %>% 
+  dplyr::select(title, b_i, n) %>% 
+  slice(1:10) %>% 
+  knitr::kable()
+```
+
+Show change of results compared to previous estimates of RMSE
+
+```{r}
+predicted_ratings <- validation %>% 
+  left_join(movie_reg_avgs, by='movieId') %>%
+  mutate(pred = mu + b_i) %>%
+  .$pred
+
+model_3_rmse <- RMSE(predicted_ratings, validation$rating)
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Regularized Movie Effect Model",  
+                                     RMSE = model_2_rmse ))
+rmse_results %>% knitr::kable()
+```
+
+
+Choose lambda
+
+```{r}
+lambdas <- seq(0, 10, 0.25)
+
+mu <- mean(edx$rating)
+just_the_sum <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(s = sum(rating - mu), n_i = n())
+
+rmses <- sapply(lambdas, function(l){
+  predicted_ratings <- validation %>% 
+    left_join(just_the_sum, by='movieId') %>% 
+    mutate(b_i = s/(n_i+l)) %>%
+    mutate(pred = mu + b_i) %>%
+    .$pred
+  return(RMSE(predicted_ratings, validation$rating))
+})
+qplot(lambdas, rmses)  
+lambdas[which.min(rmses)]
+```
+
+
+Pick lambda with cross-validation 
+
+```{r}
+lambdas <- seq(0, 10, 0.25)
+
+rmses <- sapply(lambdas, function(l){
+  
+  mu <- mean(edx$rating)
+  
+  b_i <- edx %>% 
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+  
+  b_u <- edx %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+  
+  predicted_ratings <- 
+    validation %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu + b_i + b_u) %>%
+    .$pred
+  
+  return(RMSE(predicted_ratings, validation$rating))
+})
+
+qplot(lambdas, rmses) 
+```
+ 
+
+Calculate the optimal lambda for the whole model 
+
+```{r}
+lambda <- lambdas[which.min(rmses)]
+lambda
+```
+
+
+Create table to show results of the model and the different results of RSME
+
+```{r}
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Regularized Movie + User Effect Model",  
+                                     RMSE = min(rmses)))
+rmse_results %>% knitr::kable()
+```
